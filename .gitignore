@@ -1,0 +1,14 @@
+papers/
+saved_model/
+wandb-key.txt
+wandb/
+__pycache__/
+
+RARE25-train-data/
+EVC_Barretts_FullSet/
+
+*.rar
+*.zip
+*.csv
+
+*.png
