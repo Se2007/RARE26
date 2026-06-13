@@ -7,6 +7,7 @@ from methods.ResNet import resnet50
 
 from utils import train_one_epoch
 from metrics import compute_metrics
+from loss import WeightedFocalLoss, HybridBCEMedicalLoss
 
 from prettytable import PrettyTable
 from colorama import Fore, Style, init
@@ -63,7 +64,17 @@ table.field_names = ["LR \ WD"] + [f"WD {i}" for i in weight_decays]
 
 metric = compute_metrics
 
-loss_fn = nn.BCEWithLogitsLoss().to(device)
+pos_weight_tensor = torch.tensor([10.0], dtype=torch.float32)
+
+# loss_fn = nn.BCEWithLogitsLoss()
+# loss_fn = WeightedFocalLoss(alpha=0.95, gamma=1.5).to(device)
+# loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor).to(device)
+loss_fn = HybridBCEMedicalLoss(
+    pos_weight_bce=20.0,  
+    alpha_focal=0.95,     
+    gamma_focal=1.0,      
+    lambda_hybrid=0.5      
+).to(device)
 
 
 for lr in learning_rates:
@@ -84,9 +95,9 @@ for lr in learning_rates:
 
 
         for epoch in range(1, num_epochs+1):
-            model, epoch_metrics = train_one_epoch(model, train_loader, loss_fn, optimizer, metric, epoch, device=device)
+            model, epoch_metrics, _, _ = train_one_epoch(model, train_loader, loss_fn, optimizer, metric, epoch, device=device)
 
-        print(f"Final Loss: {epoch_metrics["Loss"]}")   
+        print(f"Final Loss: {epoch_metrics['Loss']}")   
      
         loss_list.append(float(f'{epoch_metrics["Loss"]:.4f}'))
 
