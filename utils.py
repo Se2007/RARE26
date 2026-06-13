@@ -43,7 +43,7 @@ def train_one_epoch(model, train_loader, loss_fn, optimizer, metric,epoch=None, 
     
     epoch_metrics["Loss"] = loss_train.compute().item()
     
-    return model, epoch_metrics
+    return model, epoch_metrics, all_targets, all_scores
 
 
 
@@ -76,7 +76,7 @@ def evaluate(model, test_loader, loss_fn, metric, device='cpu'):
   
   epoch_metrics["Loss"] = loss_eval.compute().item()
   
-  return epoch_metrics
+  return epoch_metrics, all_targets, all_scores
 
 
 def load(model, optimizer=None, loss_fn=None, device='cpu', reset=False, load_path=None):
