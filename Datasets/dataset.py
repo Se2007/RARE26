@@ -33,7 +33,8 @@ class RareDataset(Dataset):
     def default_transforms(self):
         return transforms.Compose(
             [
-                transforms.Resize((224, 224)),
+                # transforms.Resize((224, 224)),
+                Letterbox(224), 
                 transforms.ToTensor(),
                 # transforms.Normalize(
                 #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -65,6 +66,32 @@ class RareDataset(Dataset):
         return image, label
     
 
+
+
+class Letterbox:
+    def __init__(self, size: int | tuple[int, int] = 224, fill: int = 114):
+        self.size = (size, size) if isinstance(size, int) else size
+        self.fill = fill 
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        w, h = img.size  # PIL → (W, H)
+        target_h, target_w = self.size
+
+        scale = min(target_h / h, target_w / w)
+        new_h = int(round(h * scale))
+        new_w = int(round(w * scale))
+
+        img = img.resize((new_w, new_h), Image.BILINEAR)
+
+        canvas = Image.new("RGB", (target_w, target_h), (self.fill,) * 3)
+        pad_left = (target_w - new_w) // 2
+        pad_top  = (target_h - new_h) // 2
+        canvas.paste(img, (pad_left, pad_top))
+
+        return canvas
+
+    def __repr__(self):
+        return f"Letterbox(size={self.size}, fill={self.fill})"
 
 
 def split_dataset(dataset, val_split=0.2, seed=42):
