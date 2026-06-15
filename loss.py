@@ -52,9 +52,9 @@ class HybridBCEMedicalLoss(nn.Module):
 
 
 criterion = HybridBCEMedicalLoss(
-    pos_weight_bce=20.0,  # بر اساس نسبت داده‌های بیمارستان‌هایت
-    alpha_focal=0.95,     # اهمیت دادن بیشتر به کلاس مثبت در فوکال لوس
-    gamma_focal=1.0,      # گامای ملایم ۱ برای کنترل نویزهای پزشکی
-    lambda_hybrid=0.5     # سهم ۵۰-۵۰ برای هر دو تابع زیان
+    pos_weight_bce=20.0,
+    alpha_focal=0.95,
+    gamma_focal=1.0,
+    lambda_hybrid=0.5
 )
 

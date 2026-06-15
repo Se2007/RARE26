@@ -3,6 +3,7 @@ saved_model/
 wandb-key.txt
 wandb/
 __pycache__/
+.idea/
 
 RARE25-train-data/
 EVC_Barretts_FullSet/
