@@ -1,6 +1,7 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
-
+import numpy as np
+import cv2
 
 import random
 import torch
@@ -33,8 +34,8 @@ class RareDataset(Dataset):
     def default_transforms(self):
         return transforms.Compose(
             [
-                # transforms.Resize((224, 224)),
-                Letterbox(224), 
+                transforms.Resize((224, 224)),
+
                 transforms.ToTensor(),
                 # transforms.Normalize(
                 #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -67,7 +68,31 @@ class RareDataset(Dataset):
     
 
 
+class EndoscopyArtifactRemover:
+    def __init__(self, target_size=(256, 256), black_threshold=20):
+        self.target_size = target_size
+        self.black_threshold = black_threshold
 
+    def __call__(self, img):
+        img_np = np.array(img)
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        h, w = gray.shape
+
+        border = int(min(h, w) * 0.18)
+        border_mask = np.zeros_like(gray)
+
+        border_mask[:border, :]  = (gray[:border, :]  < 20) * 255
+        border_mask[-border:, :] = (gray[-border:, :] < 20) * 255
+        border_mask[:, :border]  = (gray[:, :border]  < 20) * 255
+        border_mask[:, -border:] = (gray[:, -border:] < 20) * 255
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        border_mask = cv2.dilate(border_mask, kernel, iterations=1)
+
+        result = cv2.inpaint(img_np, border_mask, 7, cv2.INPAINT_TELEA)
+        result = cv2.resize(result, self.target_size, interpolation=cv2.INTER_LINEAR)
+        return Image.fromarray(result)
+    
 class Letterbox:
     def __init__(self, size: int | tuple[int, int] = 224, fill: int = 114):
         self.size = (size, size) if isinstance(size, int) else size
@@ -92,6 +117,28 @@ class Letterbox:
 
     def __repr__(self):
         return f"Letterbox(size={self.size}, fill={self.fill})"
+
+
+class GreenChannelCLAHE:
+    def __init__(self, clip_limit=2.0, tile_size=(8, 8)):
+        self.clip_limit = clip_limit
+        self.tile_size = tile_size
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        img_np = np.array(img)
+
+        g_channel = img_np[:, :, 1]
+
+        clahe = cv2.createCLAHE(
+            clipLimit=self.clip_limit,
+            tileGridSize=self.tile_size
+        )
+
+        g_enhanced = clahe.apply(g_channel)
+
+        enhanced_rgb = np.stack([g_enhanced, g_enhanced, g_enhanced], axis=-1)
+
+        return Image.fromarray(enhanced_rgb)
 
 
 def split_dataset(dataset, val_split=0.2, seed=42):
