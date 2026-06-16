@@ -128,3 +128,16 @@ def save(save_path, model, optimizer, loss_fn=None, epoch=None):
 
     torch.save(state, save_path)
     print(f"Checkpoint successfully saved to {save_path}")
+
+
+def plot(train_hist, valid_hist, label):
+    print(f'\nTrained {len(train_hist)} epochs')
+
+    plt.plot(range(len(train_hist)), train_hist, 'k-', label="Train")
+    plt.plot(range(len(valid_hist)), valid_hist, 'y-', label="Validation")
+
+    plt.xlabel('Epoch')
+    plt.ylabel(label)
+    plt.grid(True)
+    plt.legend()
+    plt.show()
