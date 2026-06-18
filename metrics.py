@@ -64,38 +64,36 @@ def compute_metrics(y_true, y_scores):
     return metrics
 
 
-def log_wandb_curves(metrics: dict, split: str, epoch: int):
-    """Logs ROC curve, PR curve, and confusion matrix using compute_metrics output."""
-
-    y_true  = metrics["_y_true"]
+def get_wandb_curves(metrics: dict, split: str) -> dict: 
+    y_true   = metrics["_y_true"]
     y_scores = metrics["_y_scores"]
     threshold = metrics["T90_Threshold"]
 
-    # --- ROC Curve ---
     fpr, tpr, _ = roc_curve(y_true, y_scores)
-    wandb.log({
-        f"{split}/roc_curve": wandb.plot.line(
-            wandb.Table(data=list(zip(fpr.tolist(), tpr.tolist())), columns=["FPR", "TPR"]),
-            x="FPR", y="TPR", title=f"{split} ROC Curve"
-        )
-    }, step=epoch)
+    roc_table = wandb.Table(
+        data=list(zip(fpr.tolist(), tpr.tolist())),
+        columns=["FPR", "TPR"]
+    )
 
-    # --- PR Curve ---
     precisions, recalls, _ = precision_recall_curve(y_true, y_scores)
-    wandb.log({
-        f"{split}/pr_curve": wandb.plot.line(
-            wandb.Table(data=list(zip(recalls.tolist(), precisions.tolist())), columns=["Recall", "Precision"]),
-            x="Recall", y="Precision", title=f"{split} PR Curve"
-        )
-    }, step=epoch)
+    pr_table = wandb.Table(
+        data=list(zip(recalls.tolist(), precisions.tolist())),
+        columns=["Recall", "Precision"]
+    )
 
-    # --- Confusion Matrix @ T90 threshold ---
     y_pred = (y_scores >= threshold).astype(int)
-    wandb.log({
+
+    return {  
+        f"{split}/roc_curve": wandb.plot.line(
+            roc_table, x="FPR", y="TPR", title=f"{split} ROC Curve"
+        ),
+        f"{split}/pr_curve": wandb.plot.line(
+            pr_table, x="Recall", y="Precision", title=f"{split} PR Curve"
+        ),
         f"{split}/confusion_matrix": wandb.plot.confusion_matrix(
             y_true=y_true.tolist(),
             preds=y_pred.tolist(),
             class_names=["Negative", "Positive"],
             title=f"{split} Confusion Matrix @ T90"
-        )
-    }, step=epoch)
+        ),
+    }
