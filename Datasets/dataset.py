@@ -1,72 +1,28 @@
 from pathlib import Path
+import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 
+from torch.utils.data import Subset, DataLoader, WeightedRandomSampler, ConcatDataset
+from sklearn.model_selection import StratifiedKFold, train_test_split
+
 import random
 import torch
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler, random_split
 
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
 
+# from Datasets.rare_dataset import RareDataset
+from rare_dataset import RareDataset
+from evc_dataset import EVCBarrettsClassification
 
-class RareDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        """
-        Args:
-            root_dir (str): Path to the main dataset folder.
-            transform (callable, optional): Optional transform to be applied on a sample.
-        """
-        self.root_dir = Path(root_dir)
-        self.transform = transform if transform else self.default_transforms()
-        self.classes = {"neo": "neoplasia", "ndbe": "nondysplastic"}
-        self.class_counts = {"neoplasia": 0, "nondysplastic": 0}
-        self.samples = self.load_samples()
 
-        # Print counts after loading
-        print(
-            f"Loaded dataset with {self.class_counts['neoplasia']} 'neo' (neoplasia) images and "
-            f"{self.class_counts['nondysplastic']} 'ndbe' (nondysplastic) images."
-        )
-
-    def default_transforms(self):
-        return transforms.Compose(
-            [
-                transforms.Resize((224, 224)),
-
-                transforms.ToTensor(),
-                # transforms.Normalize(
-                #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                # ),
-            ]
-        )
-
-    def load_samples(self):
-        samples = []
-        for center in self.root_dir.iterdir():
-            if center.is_dir():
-                for class_folder in ["neo", "ndbe"]:
-                    class_dir = center / class_folder
-                    if class_dir.exists():
-                        for img_path in class_dir.glob("*.png"):
-                            label = self.classes[class_folder]
-                            samples.append((img_path, label))
-                            self.class_counts[label] += 1  # Count the sample
-        return samples
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
-        image = Image.open(img_path).convert("RGB")
-        image = self.transform(image)
-        label = 1 if label == "neoplasia" else 0
-        return image, label
-    
-
+#---------------------------------------------------------------------#
+#                Artifact Removal for Endoscopy Images                #
+#---------------------------------------------------------------------#
 
 class EndoscopyArtifactRemover:
     def __init__(self, target_size=(256, 256), black_threshold=20):
@@ -93,6 +49,10 @@ class EndoscopyArtifactRemover:
         result = cv2.resize(result, self.target_size, interpolation=cv2.INTER_LINEAR)
         return Image.fromarray(result)
     
+#---------------------------------------------------------------------#
+#                 YOLO-style Letterbox Preprocessing                  #
+#---------------------------------------------------------------------#
+    
 class Letterbox:
     def __init__(self, size: int | tuple[int, int] = 224, fill: int = 114):
         self.size = (size, size) if isinstance(size, int) else size
@@ -118,6 +78,9 @@ class Letterbox:
     def __repr__(self):
         return f"Letterbox(size={self.size}, fill={self.fill})"
 
+#---------------------------------------------------------------------#
+#                 Green Channel Contrast Enhancement                  #
+#---------------------------------------------------------------------#
 
 class GreenChannelCLAHE:
     def __init__(self, clip_limit=2.0, tile_size=(8, 8)):
@@ -141,31 +104,42 @@ class GreenChannelCLAHE:
         return Image.fromarray(enhanced_rgb)
 
 
+#---------------------------------------------------------------------#
+#              Multi-Format Dataset Train-Val Splitter                #
+#---------------------------------------------------------------------#
+
 def split_dataset(dataset, val_split=0.2, seed=42):
     random.seed(seed)
 
-    # Separate indices by string label
-    neoplasia_indices = [
-        i for i, (_, label) in enumerate(dataset.samples) if label == "neoplasia"
-    ]
-    ndbe_indices = [
-        i for i, (_, label) in enumerate(dataset.samples) if label == "nondysplastic"
-    ]
+    neoplasia_indices = []
+    ndbe_indices = []
 
-    # Shuffle both lists
+    for i, sample in enumerate(dataset.samples):
+        if isinstance(sample, dict): 
+            label_str = sample["pathology"].upper()
+            if label_str in ["ACHD", "NEOPLASIA"]:
+                neoplasia_indices.append(i)
+            elif label_str in ["NDBT", "NONDYSPLASTIC"]:
+                ndbe_indices.append(i)
+        else: 
+            label_str = sample[1].lower()
+            if label_str in ["neoplasia", "neo"]:
+                neoplasia_indices.append(i)
+            elif label_str in ["nondysplastic", "ndbe"]:
+                ndbe_indices.append(i)
+
     random.shuffle(neoplasia_indices)
     random.shuffle(ndbe_indices)
 
-    # Split function
+    print(len(neoplasia_indices), len(ndbe_indices))
+
     def split(indices):
         val_size = int(len(indices) * val_split)
-        return indices[val_size:], indices[:val_size]  # train, val
+        return indices[val_size:], indices[:val_size]
 
-    # Split each class
     train_neo, val_neo = split(neoplasia_indices)
     train_ndbe, val_ndbe = split(ndbe_indices)
 
-    # Combine splits
     train_indices = train_neo + train_ndbe
     val_indices = val_neo + val_ndbe
 
@@ -174,15 +148,17 @@ def split_dataset(dataset, val_split=0.2, seed=42):
 
     return Subset(dataset, train_indices), Subset(dataset, val_indices)
 
-
+#---------------------------------------------------------------------#
+#              RARE Dataset Loader and Class Balancer                 #
+#---------------------------------------------------------------------#
 
 class RARE(object):
-    def __init__(self, root_path, mode, transform=None, mini=False, seed=42) :
+    def __init__(self, root_path, mode, custom_dataset = RareDataset, transform=None, mini=False, seed=42) :
         assert mode in ['train', 'valid'], 'mode should be train, test or valid'
         self.mini = mini  
 
         generator  = torch.Generator().manual_seed(seed)
-        dataset    = RareDataset(root_dir=root_path, transform=transform)
+        dataset    = custom_dataset(root_dir=root_path, transform=transform)
 
         self.train_dataset, self.val_dataset = split_dataset(dataset, seed=seed)
 
@@ -199,41 +175,177 @@ class RARE(object):
                 generator=generator
             )
 
-
-    def __call__(self, batch_size) :
-
-        data_loader = DataLoader(
-                                self.dataset, 
-                                batch_size=batch_size,
-                                shuffle=True, 
-                                # num_workers=0,
-                                # pin_memory=True 
-                                )
+    
+    def __call__(self, batch_size, balance_classes=True):
+        if balance_classes and self.mode == 'train':
+            labels = []
+            
+            for idx in range(len(self.dataset)):
+                _, label = self.dataset[idx]
+                labels.append(int(label))
+            
+            labels = np.array(labels)
+            class_counts = np.bincount(labels)
+            
+            class_weights = 1.0 / class_counts
+            sample_weights = class_weights[labels]
+            
+            sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True  # اجازه تکرار تصاویر اقلیت برای ایجاد توازن
+            )
+            
+            data_loader = DataLoader(
+                self.dataset, 
+                batch_size=batch_size,
+                sampler=sampler, 
+                num_workers=2,
+                pin_memory=True
+            )
+        else:
+            data_loader = DataLoader(
+                self.dataset, 
+                batch_size=batch_size,
+                shuffle=(self.mode == 'train'), 
+                num_workers=2,
+                pin_memory=True
+            )
        
-
-
         return data_loader
+
+
+#---------------------------------------------------------------------#
+#              Multi-Dataset Stratified Data Pipeline                 #
+#---------------------------------------------------------------------#
+
+
+def StratifiedKFold_Loader(
+    evc_root="EVC_Barretts_FullSet", 
+    rare_root="RARE25-train-data",
+    use_evc=True, 
+    use_rare=True,
+    transform=None, 
+    batch_size=16, 
+    k_fold=False, 
+    num_folds=5, 
+    balance_classes=True, 
+    mini=False, 
+    seed=42
+):
+    
+    datasets_to_combine = []
+    
+    if use_evc:
+        evc_ds = EVCBarrettsClassification(root_dir=evc_root, transform=transform)
+        datasets_to_combine.append(evc_ds)
+        print(f"-> EVC Dataset loaded ({len(evc_ds)} samples)")
+        
+    if use_rare:
+        rare_ds = RareDataset(root_dir=rare_root, transform=transform)
+        datasets_to_combine.append(rare_ds)
+        print(f"-> RARE Dataset loaded ({len(rare_ds)} samples)")
+        
+    if len(datasets_to_combine) == 0:
+        raise ValueError("")
+
+    base_dataset = ConcatDataset(datasets_to_combine)
+    print(f"Total Combined Dataset Size: {len(base_dataset)} samples")
+
+    targets = []
+    for ds in base_dataset.datasets:
+        for sample in ds.samples:
+            if isinstance(sample, dict):  
+                targets.append(sample["label"])
+            else: 
+                targets.append(1 if sample[1] in ["neoplasia", "neo"] else 0)
+    targets = np.array(targets)
+
+
+    if mini:
+        mini_size = min(1000, len(targets))
+        mini_idx = np.random.RandomState(seed).choice(len(targets), mini_size, replace=False)
+        base_dataset = Subset(base_dataset, mini_idx)
+        targets = targets[mini_idx]
+
+    indices_pool = np.arange(len(targets))
+
+
+    def build_loader(indices, labels, is_train):
+        subset = Subset(base_dataset, indices)
+        
+        if is_train and balance_classes:
+            class_counts = np.bincount(labels)
+            class_weights = 1.0 / class_counts
+            sample_weights = class_weights[labels]
+            
+            sampler = WeightedRandomSampler(
+                weights=sample_weights, 
+                num_samples=len(sample_weights), 
+                replacement=True
+            )
+            return DataLoader(subset, batch_size=batch_size, sampler=sampler, num_workers=2, pin_memory=True)
+        else:
+            return DataLoader(subset, batch_size=batch_size, shuffle=is_train, num_workers=2, pin_memory=True)
+
+    if not k_fold:
+        train_idx, val_idx = train_test_split(indices_pool, test_size=0.2, stratify=targets, random_state=seed)
+        
+        train_loader = build_loader(train_idx, targets[train_idx], is_train=True)
+        val_loader = build_loader(val_idx, targets[val_idx], is_train=False)
+        
+        yield 0, train_loader, val_loader
+        
+    else:
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        for fold, (train_idx, val_idx) in enumerate(skf.split(indices_pool, targets)):
+            train_loader = build_loader(train_idx, targets[train_idx], is_train=True)
+            val_loader = build_loader(val_idx, targets[val_idx], is_train=False)
+            
+            yield fold + 1, train_loader, val_loader
 
 
 
 
 if __name__=='__main__':
-    root_path = "./RARE25-train-data"
 
-    """
-    custom_dataset = RareDataset(root_dir=root_path, transform=None)
-    print(f"Total samples in dataset: {len(custom_dataset)}")
-    print(f"Class distribution: {custom_dataset.class_counts}")
+    ## Quick test for combined dataset and stratified loader ##
 
-    image, label = custom_dataset.__getitem__(1125)
-    print(f"Image shape: {image.shape}, Label: {label}")
+    transform = transforms.Compose([Letterbox(size=224), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
-    plt.imshow(image.permute(1,2,0))
-    plt.axis('off')
-    plt.show()
-    """
+    loaders_generator = StratifiedKFold_Loader(
+        evc_root="EVC_Barretts_FullSet",
+        rare_root="RARE25-train-data",
+        use_evc=True,        
+        use_rare=True,       
+        transform=transform,
+        batch_size=16,
+        k_fold=False,        
+        num_folds=5,
+        balance_classes=True, 
+        mini=False
+    )
 
-    train_rare = RARE(root_path, mode='train', mini=True)
+    for fold, train_loader, val_loader in loaders_generator:
+        print(f"\n--- Training Fold {fold} ---")
+        # print(len(next(iter(train_loader))))
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            if batch_idx == 0:
+                print(f"Labels in the very first batch: {labels.tolist()}")
+        
+        print(f"Train Loader: {len(train_loader.dataset)} samples, {len(train_loader)} batches")
+        print(f"Val Loader:   {len(val_loader.dataset)} samples, {len(val_loader)} batches")
+
+
+
+
+    '''
+    ## Quick test for RARE Dataset and Loader ##
+
+    # root_path = "./RARE25-train-data"
+    root_path = sys.argv[1] if len(sys.argv) > 1 else "EVC_Barretts_FullSet"
+
+    train_rare = RARE(root_path, mode='train', custom_dataset=EVCBarrettsClassification, mini=True)
     train_loader = train_rare(batch_size=16)
 
     data_iter = iter(train_loader)
@@ -245,4 +357,4 @@ if __name__=='__main__':
 
     plt.imshow(images[0].permute(1,2,0))
     plt.axis('off')
-    plt.show()
+    plt.show()'''
