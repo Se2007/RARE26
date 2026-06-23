@@ -15,7 +15,7 @@ class RareDataset(Dataset):
             transform (callable, optional): Optional transform to be applied on a sample.
         """
         self.root_dir = Path(root_dir)
-        self.transform = transform if transform else self.default_transforms()
+        self.transform = transform #if transform else self.default_transforms()
         self.classes = {"neo": "neoplasia", "ndbe": "nondysplastic"}
         self.class_counts = {"neoplasia": 0, "nondysplastic": 0}
         self.samples = self.load_samples()
@@ -57,7 +57,8 @@ class RareDataset(Dataset):
     def __getitem__(self, idx):
         img_path, label = self.samples[idx]
         image = Image.open(img_path).convert("RGB")
-        image = self.transform(image)
+        if self.transform:
+            image = self.transform(image)
         label = 1 if label == "neoplasia" else 0
         return image, label
     
@@ -66,9 +67,12 @@ class RareDataset(Dataset):
 if __name__=='__main__':
     root_path = "./RARE25-train-data"
 
+    tf = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
 
-
-    custom_dataset = RareDataset(root_dir=root_path, transform=None)
+    custom_dataset = RareDataset(root_dir=root_path, transform=tf)
     print(f"Total samples in dataset: {len(custom_dataset)}")
     print(f"Class distribution: {custom_dataset.class_counts}")
 
