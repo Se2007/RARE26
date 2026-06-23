@@ -107,7 +107,7 @@ class GreenChannelCLAHE:
 #---------------------------------------------------------------------#
 #              Multi-Format Dataset Train-Val Splitter                #
 #---------------------------------------------------------------------#
-
+'''
 def split_dataset(dataset, val_split=0.2, seed=42):
     random.seed(seed)
 
@@ -146,7 +146,68 @@ def split_dataset(dataset, val_split=0.2, seed=42):
     random.shuffle(train_indices)
     random.shuffle(val_indices)
 
+    return Subset(dataset, train_indices), Subset(dataset, val_indices)'''
+
+def split_dataset(dataset, val_split=0.2, seed=42):
+    rng = random.Random(seed) 
+
+    def _collect_samples(ds):
+        if isinstance(ds, ConcatDataset):
+            result = []
+            offset = 0
+            for sub in ds.datasets:
+                for i, s in enumerate(sub.samples):
+                    result.append((offset + i, s))
+                offset += len(sub)
+            return result
+ 
+        elif isinstance(ds, Subset):
+            inner_samples = _collect_samples(ds.dataset)
+            return [(local_i, inner_samples[ds.indices[local_i]][1])
+                    for local_i in range(len(ds.indices))]
+ 
+        else:
+            return list(enumerate(ds.samples))
+ 
+    indexed_samples = _collect_samples(dataset)
+
+    neoplasia_indices = []
+    ndbe_indices      = []
+ 
+    for local_idx, sample in indexed_samples:
+        if isinstance(sample, dict):
+            label_str = sample["pathology"].upper()
+            if label_str in ("ACHD", "NEOPLASIA"):
+                neoplasia_indices.append(local_idx)
+            elif label_str in ("NDBT", "NONDYSPLASTIC"):
+                ndbe_indices.append(local_idx)
+        else:
+            label_str = sample[1].lower()
+            if label_str in ("neoplasia", "neo"):
+                neoplasia_indices.append(local_idx)
+            elif label_str in ("nondysplastic", "ndbe"):
+                ndbe_indices.append(local_idx)
+ 
+    rng.shuffle(neoplasia_indices)
+    rng.shuffle(ndbe_indices)
+ 
+    print(f"   split_dataset → neo={len(neoplasia_indices)}, ndbe={len(ndbe_indices)}")
+ 
+    def split(indices):
+        val_size = int(len(indices) * val_split)
+        return indices[val_size:], indices[:val_size]   # train, val
+ 
+    train_neo,  val_neo  = split(neoplasia_indices)
+    train_ndbe, val_ndbe = split(ndbe_indices)
+ 
+    train_indices = train_neo  + train_ndbe
+    val_indices   = val_neo   + val_ndbe
+ 
+    rng.shuffle(train_indices)
+    rng.shuffle(val_indices)
+ 
     return Subset(dataset, train_indices), Subset(dataset, val_indices)
+
 
 #---------------------------------------------------------------------#
 #              RARE Dataset Loader and Class Balancer                 #
@@ -304,11 +365,215 @@ def StratifiedKFold_Loader(
             
             yield fold + 1, train_loader, val_loader
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────
+ 
+class TransformSubset(Dataset):
+    def __init__(self, dataset: Dataset, indices: np.ndarray, transform=None):
+        self.dataset   = dataset
+        self.indices   = indices
+        self.transform = transform
+ 
+    def __len__(self) -> int:
+        return len(self.indices)
+ 
+    def __getitem__(self, idx: int):
+        image, label = self.dataset[self.indices[idx]]
+ 
+        if self.transform is not None and not isinstance(image, torch.Tensor):
+            image = self.transform(image)
+ 
+        return image, label
+ 
+ 
+def _extract_targets(raw_datasets: list) -> np.ndarray:
+    targets = []
+    for ds in raw_datasets:
+        if hasattr(ds, "targets"):
+            targets.extend(ds.targets)
+        elif hasattr(ds, "get_targets"):
+            targets.extend(ds.get_targets())
+        else:
+            for sample in ds.samples:
+                if isinstance(sample, dict):
+                    targets.append(sample["label"])
+                else:
+                    targets.append(1 if sample[1] in ("neoplasia", "neo") else 0)
+    return np.array(targets)
+ 
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────
+ 
+class StratifiedLoader: 
+    def __init__(
+        self,
+        evc_root="EVC_Barretts_FullSet",
+        rare_root="RARE25-train-data",
+        use_evc=True,
+        use_rare=True,
+        train_transform=None,
+        val_transform=None,
+        batch_size=16,
+        balance_classes=True,
+        num_workers=2,
+        mini=False,
+        seed=42,
+    ):
+        assert use_evc or use_rare, "At least one of use_evc or use_rare must be True."
+ 
+        self.batch_size      = batch_size
+        self.balance_classes = balance_classes
+        self.num_workers     = num_workers
+        self.train_transform = train_transform
+        self.val_transform   = val_transform
+        self.seed            = seed
+ 
+        # ────────────────────────────
+        raw_datasets = []
+ 
+        if use_evc:
+            evc_ds = EVCBarrettsClassification(root_dir=evc_root, transform=None)
+            raw_datasets.append(evc_ds)
+            print(f"-> EVC  loaded  ({len(evc_ds)} samples)")
+ 
+        if use_rare:
+            rare_ds = RareDataset(root_dir=rare_root, transform=None)
+            raw_datasets.append(rare_ds)
+            print(f"-> RARE loaded  ({len(rare_ds)} samples)")
+ 
+        self._base    = ConcatDataset(raw_datasets)
+        self._targets = _extract_targets(raw_datasets)
+ 
+        print(f"   Total : {len(self._base)} samples  "
+              f"(neg={int((self._targets==0).sum())}, "
+              f"pos={int((self._targets==1).sum())})")
+ 
+        # ──────────────────────────── mini ───────────────────────────────
+        if mini:
+            mini_size = min(1000, len(self._targets))
+            rng       = np.random.RandomState(seed)
+            mini_idx  = rng.choice(len(self._targets), mini_size, replace=False)
+            self._base    = Subset(self._base, mini_idx)
+            self._targets = self._targets[mini_idx]
+            print(f"   Mini  : {mini_size} samples selected")
+ 
+        self._indices = np.arange(len(self._targets))
+ 
+    # ─────────────────────────────────────────────────────────────────────────
+ 
+    def _build_loader(self, indices: np.ndarray, labels: np.ndarray, is_train: bool) -> DataLoader:
+        transform = self.train_transform if is_train else self.val_transform
+        subset    = TransformSubset(self._base, indices, transform)
+ 
+        if is_train and self.balance_classes:
+            class_counts   = np.bincount(labels)
+            class_weights  = 1.0 / class_counts
+            sample_weights = torch.tensor(class_weights[labels], dtype=torch.float)
+ 
+            sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True,
+            )
+            return DataLoader(
+                subset,
+                batch_size=self.batch_size,
+                sampler=sampler,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
+        else:
+            return DataLoader(
+                subset,
+                batch_size=self.batch_size,
+                shuffle=is_train,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
+ 
+    # ──────────────────────────── public API ───────────────────────────────
+ 
+    def split(self, val_split=0.2):
+        train_sub, val_sub = split_dataset(self._base, val_split=val_split, seed=self.seed)
+ 
+        train_idx = np.array(train_sub.indices)
+        val_idx   = np.array(val_sub.indices)
 
+        yield (
+            0,
+            self._build_loader(train_idx, self._targets[train_idx], is_train=True),
+            self._build_loader(val_idx,   self._targets[val_idx],   is_train=False),
+        )
+ 
+    def kfold(self, num_folds: int = 5):
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=self.seed)
+        for fold, (train_idx, val_idx) in enumerate(skf.split(self._indices, self._targets)):
+            yield (
+                fold + 1,
+                self._build_loader(train_idx, self._targets[train_idx], is_train=True),
+                self._build_loader(val_idx,   self._targets[val_idx],   is_train=False),
+            )
+ 
+    # ─────────────────────────────── info ──────────────────────────────────
+ 
+    @property
+    def class_distribution(self) -> dict:
+        return {
+            "negative (NDBT/ndbe)": int((self._targets == 0).sum()),
+            "positive (ACHD/neo)":  int((self._targets == 1).sum()),
+        }
+ 
+    def __repr__(self) -> str:
+        return (
+            f"StratifiedLoader("
+            f"n={len(self._targets)}, "
+            f"neg={int((self._targets==0).sum())}, "
+            f"pos={int((self._targets==1).sum())}, "
+            f"batch={self.batch_size})"
+        )
 
 
 if __name__=='__main__':
+    from torchvision import transforms
+ 
+    train_tf = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+ 
+    val_tf = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+ 
+    loader = StratifiedLoader(
+        train_transform=train_tf,
+        val_transform=val_tf,
+        batch_size=16,
+        mini=False,
+    )
+    print(loader)
+    print("Class distribution:", loader.class_distribution)
+ 
+    # حالت ساده
+    for fold, train_dl, val_dl in loader.split():
+        print(f"\n[Split]  train={len(train_dl.dataset)}  val={len(val_dl.dataset)}")
+        images, labels = next(iter(train_dl))
+        print(f"  batch : {images.shape}  labels : {labels}")
+ 
+    # K-Fold
+    for fold, train_dl, val_dl in loader.kfold(num_folds=5):
+        print(f"[Fold {fold}]  train={len(train_dl.dataset)}  val={len(val_dl.dataset)}")
 
+
+
+    
+    '''
     ## Quick test for combined dataset and stratified loader ##
 
     transform = transforms.Compose([Letterbox(size=224), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
@@ -335,7 +600,7 @@ if __name__=='__main__':
         
         print(f"Train Loader: {len(train_loader.dataset)} samples, {len(train_loader)} batches")
         print(f"Val Loader:   {len(val_loader.dataset)} samples, {len(val_loader)} batches")
-
+    '''
 
 
 
