@@ -97,3 +97,21 @@ def get_wandb_curves(metrics: dict, split: str) -> dict:
             title=f"{split} Confusion Matrix @ T90"
         ),
     }
+
+
+
+def calculate_t90_threshold(y_true, y_scores):
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+    
+    idx = np.where(recalls >= 0.9)[0][-1]
+    
+    return thresholds[idx] if idx < len(thresholds) else thresholds[-1]
+
+def aggregate_fold_metrics(metrics_list):
+    if not metrics_list:
+        return {}
+    
+    return {
+        key: np.mean([m[key] for m in metrics_list if key in m])
+        for key in metrics_list[0].keys() if not key.startswith("_")
+    }

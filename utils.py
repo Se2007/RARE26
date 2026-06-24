@@ -5,17 +5,21 @@ from torchmetrics.aggregation import MeanMetric
 import numpy as np
 import matplotlib.pylab as plt
 
-def train_one_epoch(model, train_loader, loss_fn, optimizer, metric,epoch=None, device='cpu'):
+def train_one_epoch(model, train_loader, loss_fn, optimizer, metric, epoch=None, fold=None, device='cpu'):
     model.train()
     loss_train = MeanMetric()
     
     all_targets = []
     all_scores = []
 
-    with tqdm(train_loader, unit='batch') as tepoch:
+    desc = "🚀 Training"
+    if epoch is not None:
+        desc = f"🚀 Epoch {epoch}"
+        if fold is not None:
+            desc += f" | Fold {fold}"
+
+    with tqdm(train_loader, unit='batch', desc=desc, leave=False) as tepoch:
         for inputs, targets in tepoch:
-            if epoch:
-                tepoch.set_description(f'Epoch {epoch}')
 
             inputs = inputs.to(device)
             targets = targets.to(device).unsqueeze(1).float()
@@ -141,3 +145,33 @@ def plot(train_hist, valid_hist, label):
     plt.grid(True)
     plt.legend()
     plt.show()
+
+
+def create_wandb_log_dict(mean_train_metrics, mean_valid_metrics, get_wandb_curves_fn):
+    skip_keys = {"Accuracy", "Sensitivity", "Specificity", "T90_Threshold", "T90_TP", "T90_FP", "T90_FN"}
+    
+    wandb_log_dict = {
+        "Loss/train":         mean_train_metrics["Loss"],
+        "Loss/val":           mean_valid_metrics["Loss"],
+        "AUROC/train":        mean_train_metrics["AUROC"],
+        "AUROC/val":          mean_valid_metrics["AUROC"],
+        "AUPRC/train":        mean_train_metrics["AUPRC"],
+        "AUPRC/val":          mean_valid_metrics["AUPRC"],
+        "PPV@90Recall/train": mean_train_metrics["PPV@90% Recall"],
+        "PPV@90Recall/val":   mean_valid_metrics["PPV@90% Recall"],
+    }
+
+    for key, value in mean_train_metrics.items():
+        if key.startswith("_") or key in skip_keys or key == "Loss" or isinstance(value, np.ndarray):
+            continue
+        wandb_log_dict[f"train/{key}"] = value
+
+    for key, value in mean_valid_metrics.items():
+        if key.startswith("_") or key in skip_keys or key == "Loss" or isinstance(value, np.ndarray):
+            continue
+        wandb_log_dict[f"val/{key}"] = value
+        
+    wandb_log_dict.update(get_wandb_curves_fn(mean_train_metrics, "train"))
+    wandb_log_dict.update(get_wandb_curves_fn(mean_valid_metrics, "val"))
+
+    return wandb_log_dict

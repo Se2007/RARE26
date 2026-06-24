@@ -15,9 +15,9 @@ from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
 
-# from Datasets.rare_dataset import RareDataset
-from rare_dataset import RareDataset
-from evc_dataset import EVCBarrettsClassification
+from Datasets.rare_dataset import RareDataset
+# from rare_dataset import RareDataset
+from Datasets.evc_dataset import EVCBarrettsClassification
 
 
 #---------------------------------------------------------------------#
